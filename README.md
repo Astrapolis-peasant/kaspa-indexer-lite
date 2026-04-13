@@ -23,16 +23,21 @@ kaspad (borsh wRPC :17110)
 
 | Table | Description |
 |---|---|
-| `blocks` | Chain block headers (selected parent chain only) |
-| `block_parent` | DAG parent relationships (level 0) |
+| `blocks` | Chain block headers (virtual chain only); each row stores `selected_parent` = the previous chain block |
 | `transactions` | Full transaction data with inputs/outputs as composite type arrays |
 | `addresses_transactions` | Address to transaction lookup (deduped in Rust) |
 
+Each block stores:
+- `hash` — the chain block's own hash (PK)
+- `selected_parent` — the previous chain block on the virtual chain (derived from VCP ordering, not the header's DAG parents)
+
 Each transaction stores:
 - `block_hash` — the DAG block that included the transaction
-- `accepted_by` — the chain block that accepted/confirmed it (FK to `blocks`)
+- `accepted_by` — the chain block that accepted/confirmed it
 - `inputs` — composite type array with previous outpoint, signature script, UTXO script/amount
 - `outputs` — composite type array with amount, script public key, address
+
+Only virtual chain blocks are indexed — DAG blocks that were merged but not selected are not stored. To walk the chain, either `ORDER BY blue_score` or recursively join `blocks.hash = blocks.selected_parent`.
 
 ## Requirements
 
@@ -89,7 +94,14 @@ cargo build --release
 
 ## Reorg handling
 
-On chain reorganization, the VCP response includes removed chain block hashes. The indexer sets `accepted_by = NULL` on transactions that were accepted by removed blocks. The new chain blocks in the same response re-set `accepted_by` for re-accepted transactions via `ON CONFLICT DO UPDATE`.
+On chain reorganization, the VCP response includes `removed_chain_block_hashes`. The indexer:
+
+1. Sets `accepted_by = NULL` on transactions accepted by removed blocks (array-bound `ANY($1)` update).
+2. `DELETE`s the removed blocks from the `blocks` table — no orphaned rows accumulate.
+
+The same VCP response's `added_chain_block_hashes` then insert the new chain, and txs are re-linked via the transactions UPSERT (`ON CONFLICT DO UPDATE SET accepted_by, block_hash, block_time = EXCLUDED.*`).
+
+Deep reorgs beyond the pruning window surface as a VCP error and require a manual checkpoint reset (delete `vars.vcp_start_hash`).
 
 ## Performance
 

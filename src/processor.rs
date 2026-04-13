@@ -49,15 +49,17 @@ fn compress_subnetwork(bytes: &[u8; 20]) -> Option<Vec<u8>> {
     if len == 0 { None } else { Some(bytes[..len].to_vec()) }
 }
 
-pub fn build_index_batches(chain: &[RpcChainBlockAcceptedTransactions], page_size: usize) -> Vec<IndexBatch> {
+pub fn build_index_batches(
+    chain: &[RpcChainBlockAcceptedTransactions],
+    page_size: usize,
+    mut prev_hash: Option<Hash>,
+) -> Vec<IndexBatch> {
     let mut batches = vec![];
     let mut seen_transactions:  HashSet<Hash> = HashSet::new();
-    let mut seen_parents:       HashSet<(Hash, Hash)> = HashSet::new();
     let mut seen_addr_tx:       HashSet<(String, Hash)> = HashSet::new();
 
     for chunk in chain.chunks(page_size) {
         let mut blocks:                  Vec<BlockRow>                = vec![];
-        let mut block_parents:           Vec<BlockParentRow>          = vec![];
         let mut transactions:            Vec<TransactionRow>          = vec![];
         let mut address_transactions:    Vec<AddressTransactionRow>   = vec![];
 
@@ -65,9 +67,16 @@ pub fn build_index_batches(chain: &[RpcChainBlockAcceptedTransactions], page_siz
             let header     = &entry.chain_block_header;
             let block_hash = header.hash.expect("chain_block_header.hash");
 
+            // Selected parent on the virtual chain = the previous chain block
+            // in VCP's added_chain_block_hashes order (or the LCA / prior
+            // checkpoint for the first entry).
+            let selected_parent = prev_hash.map(hash_to_bytes);
+            prev_hash = Some(block_hash);
+
             // ── Block ────────────────────────────────────────────────────────
             blocks.push(BlockRow {
                 hash:                    hash_to_bytes(block_hash),
+                selected_parent,
                 accepted_id_merkle_root: header.accepted_id_merkle_root.map(hash_to_bytes),
                 bits:                    header.bits.map(|v| v as i64),
                 blue_score:              header.blue_score.map(|v| v as i64),
@@ -80,18 +89,6 @@ pub fn build_index_batches(chain: &[RpcChainBlockAcceptedTransactions], page_siz
                 utxo_commitment:         header.utxo_commitment.map(hash_to_bytes),
                 version:                 header.version.map(|v| v as i16),
             });
-
-            // ── Block parents (level 0) ──────────────────────────────────────
-            if let Some(level0) = header.parents_by_level.as_ref().and_then(|pbl| pbl.get(0)) {
-                for &parent_hash in level0 {
-                    if seen_parents.insert((block_hash, parent_hash)) {
-                        block_parents.push(BlockParentRow {
-                            block_hash:  hash_to_bytes(block_hash),
-                            parent_hash: hash_to_bytes(parent_hash),
-                        });
-                    }
-                }
-            }
 
             // ── Transactions ─────────────────────────────────────────────────
             for rpc_tx in &entry.accepted_transactions {
@@ -154,7 +151,6 @@ pub fn build_index_batches(chain: &[RpcChainBlockAcceptedTransactions], page_siz
 
         batches.push(IndexBatch {
             blocks,
-            block_parents,
             transactions,
             address_transactions,
         });

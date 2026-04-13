@@ -25,6 +25,7 @@ pub struct TransactionOutput {
 
 pub struct BlockRow {
     pub hash:                    Vec<u8>,
+    pub selected_parent:         Option<Vec<u8>>,
     pub accepted_id_merkle_root: Option<Vec<u8>>,
     pub bits:                    Option<i64>,
     pub blue_score:              Option<i64>,
@@ -36,11 +37,6 @@ pub struct BlockRow {
     pub timestamp:               Option<i64>,
     pub utxo_commitment:         Option<Vec<u8>>,
     pub version:                 Option<i16>,
-}
-
-pub struct BlockParentRow {
-    pub block_hash:  Vec<u8>,
-    pub parent_hash: Vec<u8>,
 }
 
 pub struct TransactionRow {
@@ -65,7 +61,6 @@ pub struct AddressTransactionRow {
 
 pub struct IndexBatch {
     pub blocks:                  Vec<BlockRow>,
-    pub block_parents:           Vec<BlockParentRow>,
     pub transactions:            Vec<TransactionRow>,
     pub address_transactions:    Vec<AddressTransactionRow>,
 }

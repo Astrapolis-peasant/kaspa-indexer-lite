@@ -7,14 +7,21 @@ use crate::processor::hash_to_bytes;
 const MAX_PARAMS: usize = 60_000; // PostgreSQL limit is 65535
 
 pub async fn handle_reorg(pool: &PgPool, removed_hashes: &[Hash]) {
+    let removed_bytes: Vec<Vec<u8>> = removed_hashes.iter().map(|h| hash_to_bytes(*h)).collect();
     let mut db_txn = pool.begin().await.expect("begin reorg transaction");
-    for &removed_hash in removed_hashes {
-        sqlx::query("UPDATE transactions SET accepted_by = NULL WHERE accepted_by = $1")
-            .bind(hash_to_bytes(removed_hash))
-            .execute(db_txn.as_mut())
-            .await
-            .expect("clear reorged acceptances");
-    }
+
+    sqlx::query("UPDATE transactions SET accepted_by = NULL WHERE accepted_by = ANY($1)")
+        .bind(&removed_bytes)
+        .execute(db_txn.as_mut())
+        .await
+        .expect("clear reorged acceptances");
+
+    sqlx::query("DELETE FROM blocks WHERE hash = ANY($1)")
+        .bind(&removed_bytes)
+        .execute(db_txn.as_mut())
+        .await
+        .expect("delete reorged blocks");
+
     db_txn.commit().await.expect("commit reorg transaction");
 }
 
@@ -24,6 +31,27 @@ pub async fn load_checkpoint(pool: &PgPool) -> Option<Hash> {
         .await
         .expect("load checkpoint");
     row.map(|(v,)| v.parse::<Hash>().expect("invalid checkpoint hash"))
+}
+
+/// After a reorg delete, the highest-blue_score block still in `blocks` is
+/// the LCA — the new virtual-chain tip as far as our DB is concerned. Used
+/// to reset `last_committed` so the next added block gets the right
+/// `selected_parent`.
+pub async fn load_tip_hash(pool: &PgPool) -> Option<Hash> {
+    let row: Option<(Vec<u8>,)> =
+        sqlx::query_as("SELECT hash FROM blocks ORDER BY blue_score DESC NULLS LAST LIMIT 1")
+            .fetch_optional(pool)
+            .await
+            .expect("load tip");
+    row.and_then(|(bytes,)| {
+        if bytes.len() == 32 {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&bytes);
+            Some(Hash::from_bytes(arr))
+        } else {
+            None
+        }
+    })
 }
 
 pub async fn save_checkpoint(db_txn: &mut Transaction<'_, Postgres>, hash: Hash) {
@@ -53,20 +81,21 @@ fn placeholders(rows: usize, cols: usize) -> String {
 pub async fn commit_index_batch(pool: &PgPool, batch: &IndexBatch, checkpoint: Hash) -> (usize, usize) {
     let mut db_txn = pool.begin().await.expect("begin transaction");
 
-    // 1. blocks (12 cols → max 5000 rows per chunk)
-    for chunk in batch.blocks.chunks(MAX_PARAMS / 12) {
+    // 1. blocks (13 cols → max ~4600 rows per chunk)
+    for chunk in batch.blocks.chunks(MAX_PARAMS / 13) {
         let sql = format!(
             "INSERT INTO blocks
-             (hash, accepted_id_merkle_root, bits, blue_score, blue_work,
+             (hash, selected_parent, accepted_id_merkle_root, bits, blue_score, blue_work,
               daa_score, hash_merkle_root, nonce, pruning_point,
               timestamp, utxo_commitment, version)
              VALUES {} ON CONFLICT (hash) DO NOTHING",
-            placeholders(chunk.len(), 12)
+            placeholders(chunk.len(), 13)
         );
         let mut query = sqlx::query(&sql);
         for b in chunk {
             query = query
                 .bind(&b.hash)
+                .bind(&b.selected_parent)
                 .bind(&b.accepted_id_merkle_root)
                 .bind(b.bits)
                 .bind(b.blue_score)
@@ -82,26 +111,16 @@ pub async fn commit_index_batch(pool: &PgPool, batch: &IndexBatch, checkpoint: H
         query.execute(db_txn.as_mut()).await.expect("insert blocks");
     }
 
-    // 2. block_parent (2 cols → max 30000 rows)
-    for chunk in batch.block_parents.chunks(MAX_PARAMS / 2) {
-        let sql = format!(
-            "INSERT INTO block_parent (block_hash, parent_hash) VALUES {} ON CONFLICT DO NOTHING",
-            placeholders(chunk.len(), 2)
-        );
-        let mut query = sqlx::query(&sql);
-        for bp in chunk {
-            query = query.bind(&bp.block_hash).bind(&bp.parent_hash);
-        }
-        query.execute(db_txn.as_mut()).await.expect("insert block_parent");
-    }
-
-    // 3. transactions (11 cols, 250 rows per chunk)
+    // 2. transactions (11 cols, 250 rows per chunk)
     for chunk in batch.transactions.chunks(250) {
         let sql = format!(
             "INSERT INTO transactions
              (transaction_id, subnetwork_id, hash, mass, payload, block_time, version,
               block_hash, accepted_by, inputs, outputs)
-             VALUES {} ON CONFLICT (transaction_id) DO UPDATE SET accepted_by = EXCLUDED.accepted_by",
+             VALUES {} ON CONFLICT (transaction_id) DO UPDATE SET
+                 accepted_by = EXCLUDED.accepted_by,
+                 block_hash  = EXCLUDED.block_hash,
+                 block_time  = EXCLUDED.block_time",
             placeholders(chunk.len(), 11)
         );
         let mut query = sqlx::query(&sql);
@@ -122,7 +141,7 @@ pub async fn commit_index_batch(pool: &PgPool, batch: &IndexBatch, checkpoint: H
         query.execute(db_txn.as_mut()).await.expect("insert transactions");
     }
 
-    // 4. addresses_transactions (3 cols → max 20000 rows)
+    // 3. addresses_transactions (3 cols → max 20000 rows)
     for chunk in batch.address_transactions.chunks(MAX_PARAMS / 3) {
         let sql = format!(
             "INSERT INTO addresses_transactions (address, transaction_id, block_time)

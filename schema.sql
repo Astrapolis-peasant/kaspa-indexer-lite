@@ -25,9 +25,13 @@ CREATE TABLE IF NOT EXISTS vars (
     value TEXT NOT NULL
 );
 
--- Chain block headers (from VCP chain_block_header)
+-- Chain block headers (from VCP chain_block_header).
+-- selected_parent is the first entry in header.parents_by_level[0] — the
+-- previous chain block on the virtual chain. Other DAG parents are not
+-- stored since they reference DAG blocks the indexer never indexes.
 CREATE TABLE IF NOT EXISTS blocks (
     hash                    BYTEA PRIMARY KEY,
+    selected_parent         BYTEA,
     accepted_id_merkle_root BYTEA,
     bits                    BIGINT,
     blue_score              BIGINT,
@@ -40,17 +44,12 @@ CREATE TABLE IF NOT EXISTS blocks (
     utxo_commitment         BYTEA,
     version                 SMALLINT
 );
+CREATE INDEX IF NOT EXISTS idx_blocks_selected_parent ON blocks (selected_parent);
+CREATE INDEX IF NOT EXISTS idx_blocks_blue_score ON blocks (blue_score);
 
--- Block DAG parent relationships (level 0)
-CREATE TABLE IF NOT EXISTS block_parent (
-    block_hash  BYTEA,
-    parent_hash BYTEA,
-    PRIMARY KEY (block_hash, parent_hash)
-);
-
--- Transactions with inputs/outputs as composite type arrays
+-- Transactions with inputs/outputs as composite type arrays.
 -- block_hash: DAG block that included the tx (verbose_data.block_hash)
--- accepted_by: chain block that accepted the tx (chain_block_header.hash, FK to blocks)
+-- accepted_by: chain block that accepted the tx (chain_block_header.hash)
 CREATE TABLE IF NOT EXISTS transactions (
     transaction_id BYTEA PRIMARY KEY,
     subnetwork_id  BYTEA,
@@ -64,6 +63,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     inputs         transactions_inputs[],
     outputs        transactions_outputs[]
 );
+CREATE INDEX IF NOT EXISTS idx_transactions_accepted_by ON transactions (accepted_by);
 
 -- Address to transaction lookup (deduped in Rust, no PK)
 CREATE TABLE IF NOT EXISTS addresses_transactions (

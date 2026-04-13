@@ -13,7 +13,7 @@ use log::{debug, info, warn};
 use sqlx::postgres::PgPoolOptions;
 use tokio::sync::mpsc;
 
-use crate::db::{commit_index_batch, handle_reorg, load_checkpoint};
+use crate::db::{commit_index_batch, handle_reorg, load_checkpoint, load_tip_hash};
 use crate::processor::build_index_batches;
 
 #[derive(Parser, Debug)]
@@ -154,10 +154,17 @@ async fn main() {
 
         let db_pool = pool.clone();
         let consumer_task = tokio::spawn(async move {
+            // Previous chain block on the virtual chain — used so each new
+            // chain block can record its selected_parent = previous one.
+            let mut last_committed: Option<Hash> = Some(start_hash);
             while let Some(response) = vcp_receiver.recv().await {
                 if !response.removed_chain_block_hashes.is_empty() {
                     warn!("Reorg: removing {} chain blocks", response.removed_chain_block_hashes.len());
                     handle_reorg(&db_pool, &response.removed_chain_block_hashes).await;
+                    // Previous tip may have been deleted; reset pointer to
+                    // the surviving max-blue_score block (the LCA) so the
+                    // next added block gets the right selected_parent.
+                    last_committed = load_tip_hash(&db_pool).await;
                 }
 
                 let added_hashes  = &response.added_chain_block_hashes;
@@ -167,7 +174,7 @@ async fn main() {
                     continue;
                 }
 
-                let index_batches = build_index_batches(chain_entries, page_size);
+                let index_batches = build_index_batches(chain_entries, page_size, last_committed);
 
                 for (i, index_batch) in index_batches.iter().enumerate() {
                     let t0         = Instant::now();
@@ -175,6 +182,7 @@ async fn main() {
                     let checkpoint = added_hashes[chunk_end - 1];
                     let (tx_count, addr_count) =
                         commit_index_batch(&db_pool, index_batch, checkpoint).await;
+                    last_committed = Some(checkpoint);
                     info!(
                         "+{:4} blocks | {:6} tx | {:6} addr | {:.2}s | {}",
                         index_batch.blocks.len(),
