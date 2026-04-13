@@ -1,0 +1,32 @@
+[package]
+name = "kaspa-indexer-lite"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.93.1"
+license = "MIT"
+
+[[bin]]
+name = "kaspa-indexer-lite"
+path = "src/main.rs"
+
+[dependencies]
+kaspa-wrpc-client = { git = "https://github.com/kaspanet/rusty-kaspa.git", tag = "v1.1.0" }
+kaspa-rpc-core    = { git = "https://github.com/kaspanet/rusty-kaspa.git", tag = "v1.1.0" }
+kaspa-hashes      = { git = "https://github.com/kaspanet/rusty-kaspa.git", tag = "v1.1.0" }
+tokio             = { version = "1.50.0", features = ["default", "signal"] }
+sqlx              = { version = "0.8.6", features = ["runtime-tokio", "runtime-tokio-native-tls", "postgres"] }
+clap              = { version = "4.5.60", features = ["cargo", "derive"] }
+log               = "0.4.29"
+env_logger        = "0.11.9"
+
+[patch.crates-io]
+serde_nested_with = { git = "https://github.com/murar8/serde_nested_with.git", tag = "0.2.6" }
+
+[profile.release]
+lto = "thin"
+strip = true
+overflow-checks = true
+panic = "abort"
+
+[profile.dev]
+panic = "abort"
