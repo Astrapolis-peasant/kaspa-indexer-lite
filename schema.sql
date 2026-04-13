@@ -1,5 +1,5 @@
 -- indexer-lite database schema
--- Apply with: psql -U postgres -h localhost kaspa_py -f schema.sql
+-- Apply with: psql -U postgres -h localhost kaspa_indexer_lite -f schema.sql
 
 -- Composite types for transaction inputs/outputs
 CREATE TYPE transactions_inputs AS (

@@ -45,8 +45,8 @@ Each transaction stores:
 ### Database
 
 ```bash
-createdb kaspa_py
-psql -U postgres -h localhost kaspa_py -f schema.sql
+createdb kaspa_indexer_lite
+psql -U postgres -h localhost kaspa_indexer_lite -f schema.sql
 ```
 
 ### PostgreSQL tuning (recommended for bulk indexing)
@@ -72,7 +72,7 @@ kaspad --utxoindex --rpclisten-borsh --rpclisten-json --ram-scale=1.0
 
 ```bash
 cargo build --release
-./target/release/kaspa-indexer-lite -d postgresql://postgres:postgres@localhost/kaspa_py
+./target/release/kaspa-indexer-lite -d postgresql://postgres:postgres@localhost/kaspa_indexer_lite
 ```
 
 ## CLI options
