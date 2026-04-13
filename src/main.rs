@@ -13,7 +13,7 @@ use log::{debug, info, warn};
 use sqlx::postgres::PgPoolOptions;
 use tokio::sync::mpsc;
 
-use crate::db::{commit_index_batch, handle_reorg, load_checkpoint, load_tip_hash};
+use crate::db::{commit_index_batch, handle_reorg, load_tip_hash};
 use crate::processor::build_index_batches;
 
 #[derive(Parser, Debug)]
@@ -71,38 +71,21 @@ async fn main() {
         let client = kaspad::connect(&args.kaspad_ws).await;
         info!("Connected to kaspad");
 
-        let start_hash = match &args.start_hash {
+        let start_hash = match args.start_hash.as_deref() {
             Some(h) => {
                 let hash = h.parse::<Hash>().expect("invalid --start-hash");
                 info!("Starting from --start-hash {}", hash);
-                sqlx::query(
-                    "INSERT INTO vars (key, value) VALUES ('vcp_start_hash', $1)
-                     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
-                )
-                .bind(hash.to_string())
-                .execute(&pool)
-                .await
-                .expect("save start hash");
                 hash
             }
-            None => match load_checkpoint(&pool).await {
+            None => match load_tip_hash(&pool).await {
                 Some(hash) => {
-                    info!("Resuming from {}", hash);
+                    info!("Resuming from DB tip {}", hash);
                     hash
                 }
                 None => {
-                    let dag_info      = client.get_block_dag_info().await.expect("get_block_dag_info");
-                    let pruning_point = dag_info.pruning_point_hash;
-                    info!("No checkpoint — starting from pruning point {}", pruning_point);
-                    sqlx::query(
-                        "INSERT INTO vars (key, value) VALUES ('vcp_start_hash', $1)
-                         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
-                    )
-                    .bind(pruning_point.to_string())
-                    .execute(&pool)
-                    .await
-                    .expect("save pruning point");
-                    pruning_point
+                    let pp = client.get_block_dag_info().await.expect("get_block_dag_info").pruning_point_hash;
+                    info!("Fresh DB — starting from pruning point {}", pp);
+                    pp
                 }
             },
         };
@@ -179,17 +162,16 @@ async fn main() {
                 for (i, index_batch) in index_batches.iter().enumerate() {
                     let t0         = Instant::now();
                     let chunk_end  = std::cmp::min((i + 1) * page_size, added_hashes.len());
-                    let checkpoint = added_hashes[chunk_end - 1];
-                    let (tx_count, addr_count) =
-                        commit_index_batch(&db_pool, index_batch, checkpoint).await;
-                    last_committed = Some(checkpoint);
+                    let tip        = added_hashes[chunk_end - 1];
+                    let (tx_count, addr_count) = commit_index_batch(&db_pool, index_batch).await;
+                    last_committed = Some(tip);
                     info!(
                         "+{:4} blocks | {:6} tx | {:6} addr | {:.2}s | {}",
                         index_batch.blocks.len(),
                         tx_count,
                         addr_count,
                         t0.elapsed().as_secs_f64(),
-                        checkpoint,
+                        tip,
                     );
                 }
             }

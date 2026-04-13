@@ -19,12 +19,6 @@ CREATE TYPE transactions_outputs AS (
     script_public_key_address TEXT
 );
 
--- Indexer state (checkpoint hash, etc.)
-CREATE TABLE IF NOT EXISTS vars (
-    key   VARCHAR(255) PRIMARY KEY,
-    value TEXT NOT NULL
-);
-
 -- Chain block headers (from VCP chain_block_header).
 -- selected_parent is the first entry in header.parents_by_level[0] — the
 -- previous chain block on the virtual chain. Other DAG parents are not

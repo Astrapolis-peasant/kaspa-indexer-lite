@@ -1,5 +1,5 @@
 use kaspa_hashes::Hash;
-use sqlx::{PgPool, Postgres, Transaction};
+use sqlx::PgPool;
 
 use crate::models::IndexBatch;
 use crate::processor::hash_to_bytes;
@@ -25,18 +25,9 @@ pub async fn handle_reorg(pool: &PgPool, removed_hashes: &[Hash]) {
     db_txn.commit().await.expect("commit reorg transaction");
 }
 
-pub async fn load_checkpoint(pool: &PgPool) -> Option<Hash> {
-    let row: Option<(String,)> = sqlx::query_as("SELECT value FROM vars WHERE key = 'vcp_start_hash'")
-        .fetch_optional(pool)
-        .await
-        .expect("load checkpoint");
-    row.map(|(v,)| v.parse::<Hash>().expect("invalid checkpoint hash"))
-}
-
-/// After a reorg delete, the highest-blue_score block still in `blocks` is
-/// the LCA — the new virtual-chain tip as far as our DB is concerned. Used
-/// to reset `last_committed` so the next added block gets the right
-/// `selected_parent`.
+/// The virtual-chain tip as far as our DB is concerned — max-blue_score
+/// block currently in `blocks`. Used both as the resume checkpoint on
+/// startup and to reset `last_committed` after a reorg delete.
 pub async fn load_tip_hash(pool: &PgPool) -> Option<Hash> {
     let row: Option<(Vec<u8>,)> =
         sqlx::query_as("SELECT hash FROM blocks ORDER BY blue_score DESC NULLS LAST LIMIT 1")
@@ -54,17 +45,6 @@ pub async fn load_tip_hash(pool: &PgPool) -> Option<Hash> {
     })
 }
 
-pub async fn save_checkpoint(db_txn: &mut Transaction<'_, Postgres>, hash: Hash) {
-    sqlx::query(
-        "INSERT INTO vars (key, value) VALUES ('vcp_start_hash', $1)
-         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
-    )
-    .bind(hash.to_string())
-    .execute(db_txn.as_mut())
-    .await
-    .expect("save checkpoint");
-}
-
 fn placeholders(rows: usize, cols: usize) -> String {
     (0..rows)
         .map(|r| {
@@ -78,7 +58,7 @@ fn placeholders(rows: usize, cols: usize) -> String {
         .join(", ")
 }
 
-pub async fn commit_index_batch(pool: &PgPool, batch: &IndexBatch, checkpoint: Hash) -> (usize, usize) {
+pub async fn commit_index_batch(pool: &PgPool, batch: &IndexBatch) -> (usize, usize) {
     let mut db_txn = pool.begin().await.expect("begin transaction");
 
     // 1. blocks (13 cols → max ~4600 rows per chunk)
@@ -155,7 +135,6 @@ pub async fn commit_index_batch(pool: &PgPool, batch: &IndexBatch, checkpoint: H
         query.execute(db_txn.as_mut()).await.expect("insert addresses_transactions");
     }
 
-    save_checkpoint(&mut db_txn, checkpoint).await;
     db_txn.commit().await.expect("commit transaction");
 
     (batch.transactions.len(), batch.address_transactions.len())
