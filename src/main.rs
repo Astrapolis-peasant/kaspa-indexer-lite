@@ -68,8 +68,9 @@ async fn main() {
     let poll_interval = Duration::from_millis(args.poll_interval_ms);
 
     loop {
-        let client = kaspad::connect(&args.kaspad_ws).await;
-        info!("Connected to kaspad");
+        let vcp_client = kaspad::connect(&args.kaspad_ws).await;
+        let dag_client = kaspad::connect(&args.kaspad_ws).await;
+        info!("Connected to kaspad (2 wRPC connections)");
 
         let start_hash = match args.start_hash.as_deref() {
             Some(h) => {
@@ -83,7 +84,7 @@ async fn main() {
                     hash
                 }
                 None => {
-                    let pp = client.get_block_dag_info().await.expect("get_block_dag_info").pruning_point_hash;
+                    let pp = vcp_client.get_block_dag_info().await.expect("get_block_dag_info").pruning_point_hash;
                     info!("Fresh DB — starting from pruning point {}", pp);
                     pp
                 }
@@ -95,7 +96,7 @@ async fn main() {
         let dag_start = match load_dag_tip(&pool).await {
             Some(h) => { info!("DAG resuming from {}", h); h }
             None    => {
-                let pp = client.get_block_dag_info().await.expect("get_block_dag_info").pruning_point_hash;
+                let pp = dag_client.get_block_dag_info().await.expect("get_block_dag_info").pruning_point_hash;
                 info!("DAG fresh — starting from pruning point {}", pp);
                 pp
             }
@@ -106,9 +107,6 @@ async fn main() {
 
         let page_size    = args.page_size;
         let min_conf     = args.min_confirmations;
-        let vcp_client   = client.clone();
-        let dag_client   = client.clone();
-        drop(client);
 
         let fetcher_task = tokio::spawn(async move {
             let client = vcp_client;
@@ -208,8 +206,8 @@ async fn main() {
                         if let Some(last) = resp.block_hashes.last() {
                             low = *last;
                         }
-                        debug!("dag fetched {:4} blocks in {:.2}s | {}",
-                               resp.blocks.len(), t0.elapsed().as_secs_f64(), low);
+                        info!("dag fetched {:4} blocks in {:.2}s | {}",
+                              resp.blocks.len(), t0.elapsed().as_secs_f64(), low);
                         if dag_sender.send(resp.blocks).await.is_err() { break; }
                     }
                     Err(e) => {
