@@ -29,7 +29,6 @@ CREATE TABLE IF NOT EXISTS blocks (
     is_chain_block          BOOLEAN NOT NULL DEFAULT false,
     selected_parent         BYTEA,
     parents                 BYTEA[],
-    tx_ids                  BYTEA[],
     accepted_id_merkle_root BYTEA,
     bits                    BIGINT,
     blue_score              BIGINT,
@@ -63,13 +62,11 @@ CREATE TABLE IF NOT EXISTS transactions (
     outputs        transactions_outputs[]
 );
 CREATE INDEX IF NOT EXISTS idx_transactions_accepted_by ON transactions (accepted_by);
--- LZ4 compression applied only to columns large enough to be TOASTed
--- (> ~2KB off-page values). Small fields like blue_work/parents never toast,
--- so compression setting is a no-op for them.
-ALTER TABLE transactions ALTER COLUMN inputs  SET COMPRESSION lz4;
-ALTER TABLE transactions ALTER COLUMN outputs SET COMPRESSION lz4;
+-- LZ4 compression on `payload` only. Typical Kaspa inputs/outputs arrays
+-- stay under the TOAST threshold (~2 KB) so compression there is a no-op.
+-- `payload` can occasionally be large (coinbase metadata, covenants in
+-- future) and benefits from LZ4 on the rare large values.
 ALTER TABLE transactions ALTER COLUMN payload SET COMPRESSION lz4;
-ALTER TABLE blocks       ALTER COLUMN tx_ids  SET COMPRESSION lz4;
 
 -- Address to transaction lookup (deduped in Rust, no PK)
 CREATE TABLE IF NOT EXISTS addresses_transactions (

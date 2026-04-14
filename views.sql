@@ -22,7 +22,6 @@ SELECT
   is_chain_block,
   selected_parent,
   parents,
-  tx_ids,
   blue_score,
   daa_score,
   timestamp,

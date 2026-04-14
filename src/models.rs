@@ -27,7 +27,6 @@ pub struct BlockRow {
     pub is_chain_block:          bool,
     pub selected_parent:         Option<Vec<u8>>,
     pub parents:                 Option<Vec<Vec<u8>>>,
-    pub tx_ids:                  Option<Vec<Vec<u8>>>,
     pub accepted_id_merkle_root: Option<Vec<u8>>,
     pub bits:                    Option<i64>,
     pub blue_score:              Option<i64>,

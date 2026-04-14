@@ -77,19 +77,12 @@ pub fn build_index_batches(
                 .and_then(|pbl| pbl.get(0))
                 .map(|level0| level0.iter().map(|h| hash_to_bytes(*h)).collect::<Vec<_>>());
 
-            // Tx ids of all transactions accepted by this chain block.
-            let tx_ids: Vec<Vec<u8>> = entry.accepted_transactions.iter()
-                .filter_map(|rpc_tx| rpc_tx.verbose_data.as_ref()?.transaction_id)
-                .map(hash_to_bytes)
-                .collect();
-
             // ── Block ────────────────────────────────────────────────────────
             blocks.push(BlockRow {
                 hash:                    hash_to_bytes(block_hash),
                 is_chain_block:          true,
                 selected_parent,
                 parents,
-                tx_ids:                  (!tx_ids.is_empty()).then_some(tx_ids),
                 accepted_id_merkle_root: header.accepted_id_merkle_root.map(hash_to_bytes),
                 bits:                    header.bits.map(|v| v as i64),
                 blue_score:              header.blue_score.map(|v| v as i64),
@@ -186,10 +179,6 @@ pub fn build_dag_block_rows(blocks: &[RpcBlock]) -> Vec<BlockRow> {
 
         let selected_parent = vd.map(|v| hash_to_bytes(v.selected_parent_hash));
 
-        let tx_ids: Vec<Vec<u8>> = vd
-            .map(|v| v.transaction_ids.iter().map(|h| hash_to_bytes(*h)).collect())
-            .unwrap_or_default();
-
         let is_chain_block = vd.map(|v| v.is_chain_block).unwrap_or(false);
 
         BlockRow {
@@ -197,7 +186,6 @@ pub fn build_dag_block_rows(blocks: &[RpcBlock]) -> Vec<BlockRow> {
             is_chain_block,
             selected_parent,
             parents,
-            tx_ids:                  (!tx_ids.is_empty()).then_some(tx_ids),
             accepted_id_merkle_root: Some(hash_to_bytes(header.accepted_id_merkle_root)),
             bits:                    Some(header.bits as i64),
             blue_score:              Some(header.blue_score as i64),

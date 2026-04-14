@@ -82,23 +82,21 @@ fn placeholders(rows: usize, cols: usize) -> String {
 pub async fn commit_index_batch(pool: &PgPool, batch: &IndexBatch) -> (usize, usize) {
     let mut db_txn = pool.begin().await.expect("begin transaction");
 
-    // 1. blocks (16 cols → max ~3700 rows per chunk)
-    // ON CONFLICT: update is_chain_block=true (this is a chain block), and
-    // fill in fields the DAG writer might not yet have. Preserve existing
-    // parents/tx_ids if already populated (by DAG side).
-    for chunk in batch.blocks.chunks(MAX_PARAMS / 16) {
+    // 1. blocks (15 cols → max ~4000 rows per chunk)
+    // ON CONFLICT: flip is_chain_block=true; fill in selected_parent/parents
+    // if DAG writer hasn't arrived yet.
+    for chunk in batch.blocks.chunks(MAX_PARAMS / 15) {
         let sql = format!(
             "INSERT INTO blocks
-             (hash, is_chain_block, selected_parent, parents, tx_ids,
+             (hash, is_chain_block, selected_parent, parents,
               accepted_id_merkle_root, bits, blue_score, blue_work,
               daa_score, hash_merkle_root, nonce, pruning_point,
               timestamp, utxo_commitment, version)
              VALUES {} ON CONFLICT (hash) DO UPDATE SET
                  is_chain_block  = true,
                  selected_parent = COALESCE(blocks.selected_parent, EXCLUDED.selected_parent),
-                 parents         = COALESCE(blocks.parents,         EXCLUDED.parents),
-                 tx_ids          = COALESCE(blocks.tx_ids,          EXCLUDED.tx_ids)",
-            placeholders(chunk.len(), 16)
+                 parents         = COALESCE(blocks.parents,         EXCLUDED.parents)",
+            placeholders(chunk.len(), 15)
         );
         let mut query = sqlx::query(&sql);
         for b in chunk {
@@ -107,7 +105,6 @@ pub async fn commit_index_batch(pool: &PgPool, batch: &IndexBatch) -> (usize, us
                 .bind(b.is_chain_block)
                 .bind(&b.selected_parent)
                 .bind(&b.parents)
-                .bind(&b.tx_ids)
                 .bind(&b.accepted_id_merkle_root)
                 .bind(b.bits)
                 .bind(b.blue_score)
@@ -173,24 +170,23 @@ pub async fn commit_index_batch(pool: &PgPool, batch: &IndexBatch) -> (usize, us
 }
 
 /// Insert DAG block rows into the unified `blocks` table. The DAG side
-/// owns all header fields + `parents`/`tx_ids`; it respects whatever
+/// owns all header fields + `parents`; it respects whatever
 /// `is_chain_block` the VCP side may have already set (true wins true).
 pub async fn commit_dag_blocks(pool: &PgPool, rows: &[BlockRow]) -> usize {
     if rows.is_empty() { return 0; }
     let mut db_txn = pool.begin().await.expect("begin dag txn");
-    for chunk in rows.chunks(MAX_PARAMS / 16) {
+    for chunk in rows.chunks(MAX_PARAMS / 15) {
         let sql = format!(
             "INSERT INTO blocks
-             (hash, is_chain_block, selected_parent, parents, tx_ids,
+             (hash, is_chain_block, selected_parent, parents,
               accepted_id_merkle_root, bits, blue_score, blue_work,
               daa_score, hash_merkle_root, nonce, pruning_point,
               timestamp, utxo_commitment, version)
              VALUES {} ON CONFLICT (hash) DO UPDATE SET
                  is_chain_block  = blocks.is_chain_block OR EXCLUDED.is_chain_block,
                  selected_parent = COALESCE(EXCLUDED.selected_parent, blocks.selected_parent),
-                 parents         = COALESCE(EXCLUDED.parents,         blocks.parents),
-                 tx_ids          = COALESCE(EXCLUDED.tx_ids,          blocks.tx_ids)",
-            placeholders(chunk.len(), 16)
+                 parents         = COALESCE(EXCLUDED.parents,         blocks.parents)",
+            placeholders(chunk.len(), 15)
         );
         let mut query = sqlx::query(&sql);
         for b in chunk {
@@ -199,7 +195,6 @@ pub async fn commit_dag_blocks(pool: &PgPool, rows: &[BlockRow]) -> usize {
                 .bind(b.is_chain_block)
                 .bind(&b.selected_parent)
                 .bind(&b.parents)
-                .bind(&b.tx_ids)
                 .bind(&b.accepted_id_merkle_root)
                 .bind(b.bits)
                 .bind(b.blue_score)
