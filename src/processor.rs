@@ -16,7 +16,6 @@ fn map_inputs(rpc_tx: &kaspa_rpc_core::RpcOptionalTransaction) -> Option<Vec<Tra
             index:                    i as i16,
             previous_outpoint_hash:   outpoint.and_then(|o| o.transaction_id.map(|h| h.as_bytes().to_vec())),
             previous_outpoint_index:  outpoint.and_then(|o| o.index.map(|v| v as i16)),
-            signature_script:         input.signature_script.clone(),
             sig_op_count:             input.sig_op_count.map(|v| v as i16),
             previous_outpoint_script: utxo.and_then(|u| u.script_public_key.as_ref().map(|spk| spk.script().to_vec())),
             previous_outpoint_amount: utxo.and_then(|u| u.amount.map(|v| v as i64)),

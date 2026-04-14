@@ -6,7 +6,6 @@ CREATE TYPE transactions_inputs AS (
     index                    SMALLINT,
     previous_outpoint_hash   BYTEA,
     previous_outpoint_index  SMALLINT,
-    signature_script         BYTEA,
     sig_op_count             SMALLINT,
     previous_outpoint_script BYTEA,
     previous_outpoint_amount BIGINT
@@ -64,6 +63,13 @@ CREATE TABLE IF NOT EXISTS transactions (
     outputs        transactions_outputs[]
 );
 CREATE INDEX IF NOT EXISTS idx_transactions_accepted_by ON transactions (accepted_by);
+-- LZ4 compression applied only to columns large enough to be TOASTed
+-- (> ~2KB off-page values). Small fields like blue_work/parents never toast,
+-- so compression setting is a no-op for them.
+ALTER TABLE transactions ALTER COLUMN inputs  SET COMPRESSION lz4;
+ALTER TABLE transactions ALTER COLUMN outputs SET COMPRESSION lz4;
+ALTER TABLE transactions ALTER COLUMN payload SET COMPRESSION lz4;
+ALTER TABLE blocks       ALTER COLUMN tx_ids  SET COMPRESSION lz4;
 
 -- Address to transaction lookup (deduped in Rust, no PK)
 CREATE TABLE IF NOT EXISTS addresses_transactions (
