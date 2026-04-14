@@ -78,11 +78,15 @@ pub fn build_index_batches(
                 .map(|level0| level0.iter().map(|h| hash_to_bytes(*h)).collect::<Vec<_>>());
 
             // ── Block ────────────────────────────────────────────────────────
+            // tx_count left None on the VCP side — the DAG writer populates it
+            // from the block header's transaction_ids (body count, not the
+            // mergeset-wide accepted set VCP sees here).
             blocks.push(BlockRow {
                 hash:                    hash_to_bytes(block_hash),
                 is_chain_block:          true,
                 selected_parent,
                 parents,
+                tx_count:                None,
                 accepted_id_merkle_root: header.accepted_id_merkle_root.map(hash_to_bytes),
                 bits:                    header.bits.map(|v| v as i64),
                 blue_score:              header.blue_score.map(|v| v as i64),
@@ -180,12 +184,14 @@ pub fn build_dag_block_rows(blocks: &[RpcBlock]) -> Vec<BlockRow> {
         let selected_parent = vd.map(|v| hash_to_bytes(v.selected_parent_hash));
 
         let is_chain_block = vd.map(|v| v.is_chain_block).unwrap_or(false);
+        let tx_count = vd.map(|v| v.transaction_ids.len() as i16);
 
         BlockRow {
             hash:                    hash_to_bytes(header.hash),
             is_chain_block,
             selected_parent,
             parents,
+            tx_count,
             accepted_id_merkle_root: Some(hash_to_bytes(header.accepted_id_merkle_root)),
             bits:                    Some(header.bits as i64),
             blue_score:              Some(header.blue_score as i64),

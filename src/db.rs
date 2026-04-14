@@ -82,21 +82,22 @@ fn placeholders(rows: usize, cols: usize) -> String {
 pub async fn commit_index_batch(pool: &PgPool, batch: &IndexBatch) -> (usize, usize) {
     let mut db_txn = pool.begin().await.expect("begin transaction");
 
-    // 1. blocks (15 cols → max ~4000 rows per chunk)
-    // ON CONFLICT: flip is_chain_block=true; fill in selected_parent/parents
-    // if DAG writer hasn't arrived yet.
-    for chunk in batch.blocks.chunks(MAX_PARAMS / 15) {
+    // 1. blocks (16 cols → max ~3700 rows per chunk)
+    // ON CONFLICT: flip is_chain_block=true; fill in selected_parent/parents/
+    // tx_count if DAG writer hasn't arrived yet.
+    for chunk in batch.blocks.chunks(MAX_PARAMS / 16) {
         let sql = format!(
             "INSERT INTO blocks
-             (hash, is_chain_block, selected_parent, parents,
+             (hash, is_chain_block, selected_parent, parents, tx_count,
               accepted_id_merkle_root, bits, blue_score, blue_work,
               daa_score, hash_merkle_root, nonce, pruning_point,
               timestamp, utxo_commitment, version)
              VALUES {} ON CONFLICT (hash) DO UPDATE SET
                  is_chain_block  = true,
                  selected_parent = COALESCE(blocks.selected_parent, EXCLUDED.selected_parent),
-                 parents         = COALESCE(blocks.parents,         EXCLUDED.parents)",
-            placeholders(chunk.len(), 15)
+                 parents         = COALESCE(blocks.parents,         EXCLUDED.parents),
+                 tx_count        = COALESCE(blocks.tx_count,        EXCLUDED.tx_count)",
+            placeholders(chunk.len(), 16)
         );
         let mut query = sqlx::query(&sql);
         for b in chunk {
@@ -105,6 +106,7 @@ pub async fn commit_index_batch(pool: &PgPool, batch: &IndexBatch) -> (usize, us
                 .bind(b.is_chain_block)
                 .bind(&b.selected_parent)
                 .bind(&b.parents)
+                .bind(b.tx_count)
                 .bind(&b.accepted_id_merkle_root)
                 .bind(b.bits)
                 .bind(b.blue_score)
@@ -175,18 +177,19 @@ pub async fn commit_index_batch(pool: &PgPool, batch: &IndexBatch) -> (usize, us
 pub async fn commit_dag_blocks(pool: &PgPool, rows: &[BlockRow]) -> usize {
     if rows.is_empty() { return 0; }
     let mut db_txn = pool.begin().await.expect("begin dag txn");
-    for chunk in rows.chunks(MAX_PARAMS / 15) {
+    for chunk in rows.chunks(MAX_PARAMS / 16) {
         let sql = format!(
             "INSERT INTO blocks
-             (hash, is_chain_block, selected_parent, parents,
+             (hash, is_chain_block, selected_parent, parents, tx_count,
               accepted_id_merkle_root, bits, blue_score, blue_work,
               daa_score, hash_merkle_root, nonce, pruning_point,
               timestamp, utxo_commitment, version)
              VALUES {} ON CONFLICT (hash) DO UPDATE SET
                  is_chain_block  = blocks.is_chain_block OR EXCLUDED.is_chain_block,
                  selected_parent = COALESCE(EXCLUDED.selected_parent, blocks.selected_parent),
-                 parents         = COALESCE(EXCLUDED.parents,         blocks.parents)",
-            placeholders(chunk.len(), 15)
+                 parents         = COALESCE(EXCLUDED.parents,         blocks.parents),
+                 tx_count        = COALESCE(EXCLUDED.tx_count,        blocks.tx_count)",
+            placeholders(chunk.len(), 16)
         );
         let mut query = sqlx::query(&sql);
         for b in chunk {
@@ -195,6 +198,7 @@ pub async fn commit_dag_blocks(pool: &PgPool, rows: &[BlockRow]) -> usize {
                 .bind(b.is_chain_block)
                 .bind(&b.selected_parent)
                 .bind(&b.parents)
+                .bind(b.tx_count)
                 .bind(&b.accepted_id_merkle_root)
                 .bind(b.bits)
                 .bind(b.blue_score)

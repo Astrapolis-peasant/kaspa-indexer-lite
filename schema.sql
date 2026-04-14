@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS blocks (
     is_chain_block          BOOLEAN NOT NULL DEFAULT false,
     selected_parent         BYTEA,
     parents                 BYTEA[],
+    tx_count                SMALLINT,
     accepted_id_merkle_root BYTEA,
     bits                    BIGINT,
     blue_score              BIGINT,
@@ -62,6 +63,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     outputs        transactions_outputs[]
 );
 CREATE INDEX IF NOT EXISTS idx_transactions_accepted_by ON transactions (accepted_by);
+CREATE INDEX IF NOT EXISTS idx_transactions_block_hash  ON transactions (block_hash) WHERE block_hash IS NOT NULL;
 -- LZ4 compression on `payload` only. Typical Kaspa inputs/outputs arrays
 -- stay under the TOAST threshold (~2 KB) so compression there is a no-op.
 -- `payload` can occasionally be large (coinbase metadata, covenants in
