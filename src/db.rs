@@ -1,7 +1,7 @@
 use kaspa_hashes::Hash;
 use sqlx::PgPool;
 
-use crate::models::IndexBatch;
+use crate::models::{BlockRow, IndexBatch};
 use crate::processor::hash_to_bytes;
 
 const MAX_PARAMS: usize = 60_000; // PostgreSQL limit is 65535
@@ -16,21 +16,42 @@ pub async fn handle_reorg(pool: &PgPool, removed_hashes: &[Hash]) {
         .await
         .expect("clear reorged acceptances");
 
-    sqlx::query("DELETE FROM blocks WHERE hash = ANY($1)")
+    // Keep the blocks (they're still DAG blocks); just flip the chain flag.
+    sqlx::query("UPDATE blocks SET is_chain_block = false WHERE hash = ANY($1)")
         .bind(&removed_bytes)
         .execute(db_txn.as_mut())
         .await
-        .expect("delete reorged blocks");
+        .expect("flip reorged chain flag");
 
     db_txn.commit().await.expect("commit reorg transaction");
 }
 
-/// The virtual-chain tip as far as our DB is concerned — max-blue_score
-/// block currently in `blocks`. Used both as the resume checkpoint on
-/// startup and to reset `last_committed` after a reorg delete.
-pub async fn load_tip_hash(pool: &PgPool) -> Option<Hash> {
+/// Max-blue_score block in `blocks` regardless of chain status — used as
+/// the resume checkpoint for the DAG fetcher.
+pub async fn load_dag_tip(pool: &PgPool) -> Option<Hash> {
     let row: Option<(Vec<u8>,)> =
         sqlx::query_as("SELECT hash FROM blocks ORDER BY blue_score DESC NULLS LAST LIMIT 1")
+            .fetch_optional(pool)
+            .await
+            .expect("load dag tip");
+    row.and_then(|(bytes,)| {
+        if bytes.len() == 32 {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&bytes);
+            Some(Hash::from_bytes(arr))
+        } else {
+            None
+        }
+    })
+}
+
+/// The virtual-chain tip as far as our DB is concerned — max-blue_score
+/// chain block currently in `blocks`. Used both as the resume checkpoint
+/// on startup and to reset `last_committed` after a reorg.
+pub async fn load_tip_hash(pool: &PgPool) -> Option<Hash> {
+    // Chain tip for VCP: the highest-blue_score chain block.
+    let row: Option<(Vec<u8>,)> =
+        sqlx::query_as("SELECT hash FROM blocks WHERE is_chain_block ORDER BY blue_score DESC NULLS LAST LIMIT 1")
             .fetch_optional(pool)
             .await
             .expect("load tip");
@@ -61,21 +82,32 @@ fn placeholders(rows: usize, cols: usize) -> String {
 pub async fn commit_index_batch(pool: &PgPool, batch: &IndexBatch) -> (usize, usize) {
     let mut db_txn = pool.begin().await.expect("begin transaction");
 
-    // 1. blocks (13 cols → max ~4600 rows per chunk)
-    for chunk in batch.blocks.chunks(MAX_PARAMS / 13) {
+    // 1. blocks (16 cols → max ~3700 rows per chunk)
+    // ON CONFLICT: update is_chain_block=true (this is a chain block), and
+    // fill in fields the DAG writer might not yet have. Preserve existing
+    // parents/tx_ids if already populated (by DAG side).
+    for chunk in batch.blocks.chunks(MAX_PARAMS / 16) {
         let sql = format!(
             "INSERT INTO blocks
-             (hash, selected_parent, accepted_id_merkle_root, bits, blue_score, blue_work,
+             (hash, is_chain_block, selected_parent, parents, tx_ids,
+              accepted_id_merkle_root, bits, blue_score, blue_work,
               daa_score, hash_merkle_root, nonce, pruning_point,
               timestamp, utxo_commitment, version)
-             VALUES {} ON CONFLICT (hash) DO NOTHING",
-            placeholders(chunk.len(), 13)
+             VALUES {} ON CONFLICT (hash) DO UPDATE SET
+                 is_chain_block  = true,
+                 selected_parent = COALESCE(blocks.selected_parent, EXCLUDED.selected_parent),
+                 parents         = COALESCE(blocks.parents,         EXCLUDED.parents),
+                 tx_ids          = COALESCE(blocks.tx_ids,          EXCLUDED.tx_ids)",
+            placeholders(chunk.len(), 16)
         );
         let mut query = sqlx::query(&sql);
         for b in chunk {
             query = query
                 .bind(&b.hash)
+                .bind(b.is_chain_block)
                 .bind(&b.selected_parent)
+                .bind(&b.parents)
+                .bind(&b.tx_ids)
                 .bind(&b.accepted_id_merkle_root)
                 .bind(b.bits)
                 .bind(b.blue_score)
@@ -138,4 +170,50 @@ pub async fn commit_index_batch(pool: &PgPool, batch: &IndexBatch) -> (usize, us
     db_txn.commit().await.expect("commit transaction");
 
     (batch.transactions.len(), batch.address_transactions.len())
+}
+
+/// Insert DAG block rows into the unified `blocks` table. The DAG side
+/// owns all header fields + `parents`/`tx_ids`; it respects whatever
+/// `is_chain_block` the VCP side may have already set (true wins true).
+pub async fn commit_dag_blocks(pool: &PgPool, rows: &[BlockRow]) -> usize {
+    if rows.is_empty() { return 0; }
+    let mut db_txn = pool.begin().await.expect("begin dag txn");
+    for chunk in rows.chunks(MAX_PARAMS / 16) {
+        let sql = format!(
+            "INSERT INTO blocks
+             (hash, is_chain_block, selected_parent, parents, tx_ids,
+              accepted_id_merkle_root, bits, blue_score, blue_work,
+              daa_score, hash_merkle_root, nonce, pruning_point,
+              timestamp, utxo_commitment, version)
+             VALUES {} ON CONFLICT (hash) DO UPDATE SET
+                 is_chain_block  = blocks.is_chain_block OR EXCLUDED.is_chain_block,
+                 selected_parent = COALESCE(EXCLUDED.selected_parent, blocks.selected_parent),
+                 parents         = COALESCE(EXCLUDED.parents,         blocks.parents),
+                 tx_ids          = COALESCE(EXCLUDED.tx_ids,          blocks.tx_ids)",
+            placeholders(chunk.len(), 16)
+        );
+        let mut query = sqlx::query(&sql);
+        for b in chunk {
+            query = query
+                .bind(&b.hash)
+                .bind(b.is_chain_block)
+                .bind(&b.selected_parent)
+                .bind(&b.parents)
+                .bind(&b.tx_ids)
+                .bind(&b.accepted_id_merkle_root)
+                .bind(b.bits)
+                .bind(b.blue_score)
+                .bind(&b.blue_work)
+                .bind(b.daa_score)
+                .bind(&b.hash_merkle_root)
+                .bind(&b.nonce)
+                .bind(&b.pruning_point)
+                .bind(b.timestamp)
+                .bind(&b.utxo_commitment)
+                .bind(b.version);
+        }
+        query.execute(db_txn.as_mut()).await.expect("insert dag blocks");
+    }
+    db_txn.commit().await.expect("commit dag txn");
+    rows.len()
 }

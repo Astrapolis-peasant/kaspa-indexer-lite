@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use kaspa_hashes::Hash;
-use kaspa_rpc_core::RpcChainBlockAcceptedTransactions;
+use kaspa_rpc_core::{RpcBlock, RpcChainBlockAcceptedTransactions};
 
 use crate::models::*;
 
@@ -73,10 +73,24 @@ pub fn build_index_batches(
             let selected_parent = prev_hash.map(hash_to_bytes);
             prev_hash = Some(block_hash);
 
+            // Level-0 DAG parents (first level of parents_by_level).
+            let parents = header.parents_by_level.as_ref()
+                .and_then(|pbl| pbl.get(0))
+                .map(|level0| level0.iter().map(|h| hash_to_bytes(*h)).collect::<Vec<_>>());
+
+            // Tx ids of all transactions accepted by this chain block.
+            let tx_ids: Vec<Vec<u8>> = entry.accepted_transactions.iter()
+                .filter_map(|rpc_tx| rpc_tx.verbose_data.as_ref()?.transaction_id)
+                .map(hash_to_bytes)
+                .collect();
+
             // ── Block ────────────────────────────────────────────────────────
             blocks.push(BlockRow {
                 hash:                    hash_to_bytes(block_hash),
+                is_chain_block:          true,
                 selected_parent,
+                parents,
+                tx_ids:                  (!tx_ids.is_empty()).then_some(tx_ids),
                 accepted_id_merkle_root: header.accepted_id_merkle_root.map(hash_to_bytes),
                 bits:                    header.bits.map(|v| v as i64),
                 blue_score:              header.blue_score.map(|v| v as i64),
@@ -157,4 +171,45 @@ pub fn build_index_batches(
     }
 
     batches
+}
+
+/// Turn `get_blocks` response entries into BlockRows for the unified
+/// `blocks` table. `RpcBlock` (from `get_blocks`) uses direct (non-Option)
+/// header fields, unlike VCP's `RpcOptionalHeader`.
+pub fn build_dag_block_rows(blocks: &[RpcBlock]) -> Vec<BlockRow> {
+    blocks.iter().map(|b| {
+        let header = &b.header;
+        let vd     = b.verbose_data.as_ref();
+
+        let parents: Option<Vec<Vec<u8>>> = header.parents_by_level
+            .get(0)
+            .map(|level0| level0.iter().map(|h| hash_to_bytes(*h)).collect());
+
+        let selected_parent = vd.map(|v| hash_to_bytes(v.selected_parent_hash));
+
+        let tx_ids: Vec<Vec<u8>> = vd
+            .map(|v| v.transaction_ids.iter().map(|h| hash_to_bytes(*h)).collect())
+            .unwrap_or_default();
+
+        let is_chain_block = vd.map(|v| v.is_chain_block).unwrap_or(false);
+
+        BlockRow {
+            hash:                    hash_to_bytes(header.hash),
+            is_chain_block,
+            selected_parent,
+            parents,
+            tx_ids:                  (!tx_ids.is_empty()).then_some(tx_ids),
+            accepted_id_merkle_root: Some(hash_to_bytes(header.accepted_id_merkle_root)),
+            bits:                    Some(header.bits as i64),
+            blue_score:              Some(header.blue_score as i64),
+            blue_work:               Some(header.blue_work.to_be_bytes_var()),
+            daa_score:               Some(header.daa_score as i64),
+            hash_merkle_root:        Some(hash_to_bytes(header.hash_merkle_root)),
+            nonce:                   Some(header.nonce.to_be_bytes().to_vec()),
+            pruning_point:           Some(hash_to_bytes(header.pruning_point)),
+            timestamp:               Some(header.timestamp as i64),
+            utxo_commitment:         Some(hash_to_bytes(header.utxo_commitment)),
+            version:                 Some(header.version as i16),
+        }
+    }).collect()
 }

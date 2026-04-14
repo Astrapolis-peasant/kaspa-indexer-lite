@@ -19,13 +19,18 @@ CREATE TYPE transactions_outputs AS (
     script_public_key_address TEXT
 );
 
--- Chain block headers (from VCP chain_block_header).
--- selected_parent is the first entry in header.parents_by_level[0] — the
--- previous chain block on the virtual chain. Other DAG parents are not
--- stored since they reference DAG blocks the indexer never indexes.
+-- Unified block table: every DAG block kaspad returns via get_blocks.
+-- `is_chain_block` marks blocks currently on the virtual chain.
+-- `selected_parent` comes from verbose_data.selected_parent_hash (GHOSTDAG);
+-- for chain blocks this is the previous chain block on the virtual chain.
+-- `parents` is the level-0 DAG parent list (header.parents_by_level[0]).
+-- `tx_ids` is the list of transaction_ids included in this DAG block.
 CREATE TABLE IF NOT EXISTS blocks (
     hash                    BYTEA PRIMARY KEY,
+    is_chain_block          BOOLEAN NOT NULL DEFAULT false,
     selected_parent         BYTEA,
+    parents                 BYTEA[],
+    tx_ids                  BYTEA[],
     accepted_id_merkle_root BYTEA,
     bits                    BIGINT,
     blue_score              BIGINT,
@@ -39,7 +44,8 @@ CREATE TABLE IF NOT EXISTS blocks (
     version                 SMALLINT
 );
 CREATE INDEX IF NOT EXISTS idx_blocks_selected_parent ON blocks (selected_parent);
-CREATE INDEX IF NOT EXISTS idx_blocks_blue_score ON blocks (blue_score);
+CREATE INDEX IF NOT EXISTS idx_blocks_blue_score       ON blocks (blue_score);
+CREATE INDEX IF NOT EXISTS idx_blocks_chain_blue_score ON blocks (blue_score) WHERE is_chain_block;
 
 -- Transactions with inputs/outputs as composite type arrays.
 -- block_hash: DAG block that included the tx (verbose_data.block_hash)

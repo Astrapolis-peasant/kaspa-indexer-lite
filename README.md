@@ -7,37 +7,36 @@ A lightweight Kaspa blockchain indexer that uses the Virtual Chain (VCP) RPC end
 ```
 kaspad (borsh wRPC :17110)
     │
-    ▼
-┌──────────┐     mpsc(5)     ┌──────────┐
-│ Fetcher  │────────────────▶│ Consumer │────▶ PostgreSQL
-│          │  VCP responses  │          │
-└──────────┘                 └──────────┘
+    ├── VCP fetcher ─▶ mpsc(5) ─▶ VCP consumer ─▶ blocks (is_chain_block=true) + transactions
+    └── DAG fetcher ─▶ mpsc(5) ─▶ DAG consumer ─▶ blocks (all DAG blocks, headers only)
 ```
 
-- **Fetcher** polls `getVirtualChainFromBlockV2` with full verbosity, streams responses into a bounded channel
-- **Consumer** slices each response into page-sized batches and commits to PostgreSQL in transactions
-- Backpressure: channel capacity of 5 responses (~1,750 blocks buffered)
-- Automatic reconnection on kaspad disconnect
+- **VCP fetcher** polls `getVirtualChainFromBlockV2` with full verbosity for chain blocks + tx bodies.
+- **DAG fetcher** polls `getBlocks` (headers + verbose_data, no tx bodies) for every DAG block.
+- Both write to the unified `blocks` table via upsert; `is_chain_block` gets OR-merged between sources.
+- Backpressure: 5-response channel per side (~1,750 chain blocks or ~5,000 DAG blocks buffered).
+- Automatic reconnection on kaspad disconnect.
 
 ## What gets indexed
 
 | Table | Description |
 |---|---|
-| `blocks` | Chain block headers (virtual chain only); each row stores `selected_parent` = the previous chain block |
+| `blocks` | Every DAG block kaspad returns; `is_chain_block` flags those on the virtual chain |
 | `transactions` | Full transaction data with inputs/outputs as composite type arrays |
 | `addresses_transactions` | Address to transaction lookup (deduped in Rust) |
 
-Each block stores:
-- `hash` — the chain block's own hash (PK)
-- `selected_parent` — the previous chain block on the virtual chain (derived from VCP ordering, not the header's DAG parents)
+Each block row stores:
+- `hash` (PK), `is_chain_block`, `selected_parent` (GHOSTDAG; for chain blocks = previous chain block)
+- `parents` — level-0 DAG parents
+- `tx_ids` — transaction ids included in this block
+- header fields: `timestamp`, `blue_score`, `daa_score`, `bits`, `nonce`, merkle roots, etc.
 
 Each transaction stores:
 - `block_hash` — the DAG block that included the transaction
 - `accepted_by` — the chain block that accepted/confirmed it
-- `inputs` — composite type array with previous outpoint, signature script, UTXO script/amount
-- `outputs` — composite type array with amount, script public key, address
+- `inputs` / `outputs` — composite type arrays
 
-Only virtual chain blocks are indexed — DAG blocks that were merged but not selected are not stored. To walk the chain, either `ORDER BY blue_score` or recursively join `blocks.hash = blocks.selected_parent`.
+Virtual chain queries: filter `WHERE is_chain_block` (partial index keeps this fast).
 
 ## Requirements
 
@@ -96,12 +95,12 @@ cargo build --release
 
 On chain reorganization, the VCP response includes `removed_chain_block_hashes`. The indexer:
 
-1. Sets `accepted_by = NULL` on transactions accepted by removed blocks (array-bound `ANY($1)` update).
-2. `DELETE`s the removed blocks from the `blocks` table — no orphaned rows accumulate.
+1. Sets `accepted_by = NULL` on transactions accepted by removed blocks.
+2. Flips `is_chain_block = false` on the removed blocks. Blocks stay in the table (they're still DAG blocks); only their chain-status changes.
 
-The same VCP response's `added_chain_block_hashes` then insert the new chain, and txs are re-linked via the transactions UPSERT (`ON CONFLICT DO UPDATE SET accepted_by, block_hash, block_time = EXCLUDED.*`).
+The same VCP response's `added_chain_block_hashes` re-flip the new chain via upsert, and txs are re-linked.
 
-Deep reorgs beyond the pruning window surface as a VCP error and require a manual checkpoint reset (delete `vars.vcp_start_hash`).
+Deep reorgs beyond the pruning window surface as a VCP error and require a manual reset (truncate the indexer DB and re-sync from pruning point).
 
 ## Performance
 

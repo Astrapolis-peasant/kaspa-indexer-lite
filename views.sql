@@ -15,10 +15,14 @@ END $$;
 GRANT web_anon TO authenticator;
 GRANT USAGE ON SCHEMA api, public TO web_anon;
 
--- Blocks (chain blocks only, per VCP indexing)
+-- All blocks (DAG); filter with ?is_chain_block=eq.true for virtual chain.
 CREATE OR REPLACE VIEW api.blocks AS
 SELECT
   hash,
+  is_chain_block,
+  selected_parent,
+  parents,
+  tx_ids,
   blue_score,
   daa_score,
   timestamp,
@@ -31,6 +35,10 @@ SELECT
   pruning_point,
   blue_work
 FROM public.blocks;
+
+-- Virtual chain only (convenience view).
+CREATE OR REPLACE VIEW api.chain_blocks AS
+SELECT * FROM api.blocks WHERE is_chain_block;
 
 -- Transactions (flat; inputs/outputs arrays passed through)
 CREATE OR REPLACE VIEW api.transactions AS

@@ -8,13 +8,13 @@ use std::time::{Duration, Instant};
 use clap::Parser;
 use kaspa_hashes::Hash;
 use kaspa_rpc_core::api::rpc::RpcApi;
-use kaspa_rpc_core::{GetVirtualChainFromBlockV2Response, RpcDataVerbosityLevel};
+use kaspa_rpc_core::{GetVirtualChainFromBlockV2Response, RpcBlock, RpcDataVerbosityLevel};
 use log::{debug, info, warn};
 use sqlx::postgres::PgPoolOptions;
 use tokio::sync::mpsc;
 
-use crate::db::{commit_index_batch, handle_reorg, load_tip_hash};
-use crate::processor::build_index_batches;
+use crate::db::{commit_dag_blocks, commit_index_batch, handle_reorg, load_dag_tip, load_tip_hash};
+use crate::processor::{build_dag_block_rows, build_index_batches};
 
 #[derive(Parser, Debug)]
 #[command(name = "indexer-lite", about = "Kaspa VCP indexer (borsh wRPC)")]
@@ -90,12 +90,28 @@ async fn main() {
             },
         };
 
-        let (vcp_sender, mut vcp_receiver) = mpsc::channel::<GetVirtualChainFromBlockV2Response>(5);
+        // DAG fetcher startup point: resume from max-blue_score block in `blocks`,
+        // else pruning point.
+        let dag_start = match load_dag_tip(&pool).await {
+            Some(h) => { info!("DAG resuming from {}", h); h }
+            None    => {
+                let pp = client.get_block_dag_info().await.expect("get_block_dag_info").pruning_point_hash;
+                info!("DAG fresh — starting from pruning point {}", pp);
+                pp
+            }
+        };
 
-        let page_size = args.page_size;
-        let min_conf  = args.min_confirmations;
+        let (vcp_sender, mut vcp_receiver) = mpsc::channel::<GetVirtualChainFromBlockV2Response>(5);
+        let (dag_sender, mut dag_receiver) = mpsc::channel::<Vec<RpcBlock>>(5);
+
+        let page_size    = args.page_size;
+        let min_conf     = args.min_confirmations;
+        let vcp_client   = client.clone();
+        let dag_client   = client.clone();
+        drop(client);
 
         let fetcher_task = tokio::spawn(async move {
+            let client = vcp_client;
             let mut fetch_from = start_hash;
             loop {
                 let t0 = Instant::now();
@@ -177,9 +193,49 @@ async fn main() {
             }
         });
 
+        let dag_pool = pool.clone();
+        let dag_fetcher_task = tokio::spawn(async move {
+            let mut low = dag_start;
+            loop {
+                let t0 = Instant::now();
+                match dag_client.get_blocks(Some(low), true, false).await {
+                    Ok(resp) => {
+                        if resp.blocks.is_empty() {
+                            debug!("dag: at tip");
+                            tokio::time::sleep(poll_interval).await;
+                            continue;
+                        }
+                        if let Some(last) = resp.block_hashes.last() {
+                            low = *last;
+                        }
+                        debug!("dag fetched {:4} blocks in {:.2}s | {}",
+                               resp.blocks.len(), t0.elapsed().as_secs_f64(), low);
+                        if dag_sender.send(resp.blocks).await.is_err() { break; }
+                    }
+                    Err(e) => {
+                        warn!("get_blocks error: {} — retrying in 5s", e);
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                    }
+                }
+            }
+            info!("DAG fetcher stopped");
+            drop(dag_client);
+        });
+
+        let dag_consumer_task = tokio::spawn(async move {
+            while let Some(blocks) = dag_receiver.recv().await {
+                let t0 = Instant::now();
+                let rows = build_dag_block_rows(&blocks);
+                let n    = commit_dag_blocks(&dag_pool, &rows).await;
+                info!("dag: +{:4} blocks | {:.2}s", n, t0.elapsed().as_secs_f64());
+            }
+        });
+
         tokio::select! {
-            _ = fetcher_task  => { warn!("Fetcher exited — reconnecting in 5s"); }
-            _ = consumer_task => { warn!("Consumer exited — reconnecting in 5s"); }
+            _ = fetcher_task      => { warn!("VCP fetcher exited — reconnecting in 5s"); }
+            _ = consumer_task     => { warn!("VCP consumer exited — reconnecting in 5s"); }
+            _ = dag_fetcher_task  => { warn!("DAG fetcher exited — reconnecting in 5s"); }
+            _ = dag_consumer_task => { warn!("DAG consumer exited — reconnecting in 5s"); }
         }
 
         tokio::time::sleep(Duration::from_secs(5)).await;
