@@ -198,14 +198,17 @@ async fn main() {
                 let t0 = Instant::now();
                 match dag_client.get_blocks(Some(low), true, false).await {
                     Ok(resp) => {
-                        if resp.blocks.is_empty() {
+                        // get_blocks echoes low_hash as the first entry. If the
+                        // last entry equals our current low_hash, no forward
+                        // progress → we're at tip; sleep instead of spinning.
+                        let last = resp.block_hashes.last().copied();
+                        let advanced = last.is_some() && last != Some(low);
+                        if !advanced {
                             debug!("dag: at tip");
                             tokio::time::sleep(poll_interval).await;
                             continue;
                         }
-                        if let Some(last) = resp.block_hashes.last() {
-                            low = *last;
-                        }
+                        low = last.unwrap();
                         debug!("dag fetched {:4} blocks in {:.2}s | {}",
                                resp.blocks.len(), t0.elapsed().as_secs_f64(), low);
                         if dag_sender.send(resp.blocks).await.is_err() { break; }
