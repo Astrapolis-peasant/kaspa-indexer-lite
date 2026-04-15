@@ -19,24 +19,23 @@ kaspad (borsh wRPC :17110)
 
 ## What gets indexed
 
-| Table | Description |
-|---|---|
-| `blocks` | Every DAG block kaspad returns; `is_chain_block` flags those on the virtual chain |
-| `transactions` | Full transaction data with inputs/outputs as composite type arrays |
-| `addresses_transactions` | Address to transaction lookup (deduped in Rust) |
+| Table | Writer | Description |
+|---|---|---|
+| `dag_blocks` | DAG consumer | Every DAG block kaspad returns. Full header + `selected_parent`, `parents`, `tx_count`. |
+| `chain_blocks` | VCP consumer | Pointer table: `(hash, blue_score)` for each block on the virtual chain. |
+| `transactions` | VCP consumer | Tx data with inputs/outputs as composite type arrays. |
+| `addresses_transactions` | VCP consumer | Address → tx lookup (Rust-side deduped). |
 
-Each block row stores:
-- `hash` (PK), `is_chain_block`, `selected_parent` (GHOSTDAG; for chain blocks = previous chain block)
-- `parents` — level-0 DAG parents
-- `tx_ids` — transaction ids included in this block
-- header fields: `timestamp`, `blue_score`, `daa_score`, `bits`, `nonce`, merkle roots, etc.
+Each table has a single writer — no cross-writer lock contention, no deadlocks.
+
+Chain blocks are a subset of DAG blocks: `chain_blocks.hash` always has a matching `dag_blocks.hash` (eventually; DAG may lag slightly during initial sync). Queries that need chain-block headers join `chain_blocks ⋈ dag_blocks` on hash.
 
 Each transaction stores:
 - `block_hash` — the DAG block that included the transaction
 - `accepted_by` — the chain block that accepted/confirmed it
 - `inputs` / `outputs` — composite type arrays
 
-Virtual chain queries: filter `WHERE is_chain_block` (partial index keeps this fast).
+Virtual chain queries: hit `chain_blocks` directly (already filtered; only ~10% of all blocks).
 
 ## Requirements
 
@@ -93,12 +92,14 @@ cargo build --release
 
 ## Reorg handling
 
-On chain reorganization, the VCP response includes `removed_chain_block_hashes`. The indexer:
+On chain reorganization, the VCP response includes `removed_chain_block_hashes`. The VCP consumer:
 
 1. Sets `accepted_by = NULL` on transactions accepted by removed blocks.
-2. Flips `is_chain_block = false` on the removed blocks. Blocks stay in the table (they're still DAG blocks); only their chain-status changes.
+2. `DELETE`s the removed hashes from `chain_blocks`.
 
-The same VCP response's `added_chain_block_hashes` re-flip the new chain via upsert, and txs are re-linked.
+`dag_blocks` is untouched — the reorged blocks are still valid DAG blocks, they're just not on the virtual chain anymore.
+
+The same VCP response's `added_chain_block_hashes` insert the new chain into `chain_blocks`; txs are re-linked via the transactions UPSERT (`ON CONFLICT DO UPDATE SET accepted_by, block_hash, block_time = EXCLUDED.*`).
 
 Deep reorgs beyond the pruning window surface as a VCP error and require a manual reset (truncate the indexer DB and re-sync from pruning point).
 

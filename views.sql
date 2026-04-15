@@ -15,11 +15,30 @@ END $$;
 GRANT web_anon TO authenticator;
 GRANT USAGE ON SCHEMA api, public TO web_anon;
 
--- All blocks (DAG); filter with ?is_chain_block=eq.true for virtual chain.
+-- All DAG blocks (virtual chain + non-chain).
 CREATE OR REPLACE VIEW api.blocks AS
 SELECT
   hash,
-  is_chain_block,
+  selected_parent,
+  parents,
+  tx_count,
+  blue_score,
+  daa_score,
+  timestamp,
+  version,
+  bits,
+  nonce,
+  hash_merkle_root,
+  accepted_id_merkle_root,
+  utxo_commitment,
+  pruning_point,
+  blue_work
+FROM public.dag_blocks;
+
+-- Chain blocks only (virtual chain). Full header fields — no join needed.
+CREATE OR REPLACE VIEW api.chain_blocks AS
+SELECT
+  hash,
   selected_parent,
   parents,
   blue_score,
@@ -33,11 +52,7 @@ SELECT
   utxo_commitment,
   pruning_point,
   blue_work
-FROM public.blocks;
-
--- Virtual chain only (convenience view).
-CREATE OR REPLACE VIEW api.chain_blocks AS
-SELECT * FROM api.blocks WHERE is_chain_block;
+FROM public.chain_blocks;
 
 -- Transactions (flat; inputs/outputs arrays passed through)
 CREATE OR REPLACE VIEW api.transactions AS
@@ -67,7 +82,8 @@ FROM public.addresses_transactions;
 
 GRANT SELECT ON ALL TABLES IN SCHEMA api TO web_anon;
 GRANT SELECT ON
-  public.blocks,
+  public.dag_blocks,
+  public.chain_blocks,
   public.transactions,
   public.addresses_transactions
 TO web_anon;

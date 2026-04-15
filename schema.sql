@@ -18,15 +18,13 @@ CREATE TYPE transactions_outputs AS (
     script_public_key_address TEXT
 );
 
--- Unified block table: every DAG block kaspad returns via get_blocks.
--- `is_chain_block` marks blocks currently on the virtual chain.
--- `selected_parent` comes from verbose_data.selected_parent_hash (GHOSTDAG);
--- for chain blocks this is the previous chain block on the virtual chain.
--- `parents` is the level-0 DAG parent list (header.parents_by_level[0]).
--- `tx_ids` is the list of transaction_ids included in this DAG block.
-CREATE TABLE IF NOT EXISTS blocks (
+-- DAG blocks: every block kaspad reports via get_blocks.
+-- Written ONLY by the DAG consumer. No contention with VCP.
+-- selected_parent is GHOSTDAG's selected parent (verbose_data.selected_parent_hash).
+-- For blocks that are on the virtual chain, selected_parent is also the
+-- previous chain block — the two definitions coincide.
+CREATE TABLE IF NOT EXISTS dag_blocks (
     hash                    BYTEA PRIMARY KEY,
-    is_chain_block          BOOLEAN NOT NULL DEFAULT false,
     selected_parent         BYTEA,
     parents                 BYTEA[],
     tx_count                SMALLINT,
@@ -42,9 +40,32 @@ CREATE TABLE IF NOT EXISTS blocks (
     utxo_commitment         BYTEA,
     version                 SMALLINT
 );
-CREATE INDEX IF NOT EXISTS idx_blocks_selected_parent ON blocks (selected_parent);
-CREATE INDEX IF NOT EXISTS idx_blocks_blue_score       ON blocks (blue_score);
-CREATE INDEX IF NOT EXISTS idx_blocks_chain_blue_score ON blocks (blue_score) WHERE is_chain_block;
+CREATE INDEX IF NOT EXISTS idx_dag_blocks_selected_parent ON dag_blocks (selected_parent);
+CREATE INDEX IF NOT EXISTS idx_dag_blocks_blue_score      ON dag_blocks (blue_score);
+
+-- Chain blocks: blocks currently on the virtual chain. Written ONLY by the
+-- VCP consumer. No contention with DAG. Carries full header fields (same
+-- shape as dag_blocks) so chain-block queries don't need a join; the ~10%
+-- duplication vs dag_blocks is ~140 MB at a 2-day pruning window.
+-- Reorg = DELETE the removed hashes.
+CREATE TABLE IF NOT EXISTS chain_blocks (
+    hash                    BYTEA PRIMARY KEY,
+    selected_parent         BYTEA,
+    parents                 BYTEA[],
+    accepted_id_merkle_root BYTEA,
+    bits                    BIGINT,
+    blue_score              BIGINT,
+    blue_work               BYTEA,
+    daa_score               BIGINT,
+    hash_merkle_root        BYTEA,
+    nonce                   BYTEA,
+    pruning_point           BYTEA,
+    timestamp               BIGINT,
+    utxo_commitment         BYTEA,
+    version                 SMALLINT
+);
+CREATE INDEX IF NOT EXISTS idx_chain_blocks_blue_score      ON chain_blocks (blue_score);
+CREATE INDEX IF NOT EXISTS idx_chain_blocks_selected_parent ON chain_blocks (selected_parent);
 
 -- Transactions with inputs/outputs as composite type arrays.
 -- block_hash: DAG block that included the tx (verbose_data.block_hash)
@@ -64,10 +85,6 @@ CREATE TABLE IF NOT EXISTS transactions (
 );
 CREATE INDEX IF NOT EXISTS idx_transactions_accepted_by ON transactions (accepted_by);
 CREATE INDEX IF NOT EXISTS idx_transactions_block_hash  ON transactions (block_hash) WHERE block_hash IS NOT NULL;
--- LZ4 compression on `payload` only. Typical Kaspa inputs/outputs arrays
--- stay under the TOAST threshold (~2 KB) so compression there is a no-op.
--- `payload` can occasionally be large (coinbase metadata, covenants in
--- future) and benefits from LZ4 on the rare large values.
 ALTER TABLE transactions ALTER COLUMN payload SET COMPRESSION lz4;
 
 -- Address to transaction lookup (deduped in Rust, no PK)

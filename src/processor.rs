@@ -58,7 +58,7 @@ pub fn build_index_batches(
     let mut seen_addr_tx:       HashSet<(String, Hash)> = HashSet::new();
 
     for chunk in chain.chunks(page_size) {
-        let mut blocks:                  Vec<BlockRow>                = vec![];
+        let mut chain_blocks:            Vec<ChainBlockRow>           = vec![];
         let mut transactions:            Vec<TransactionRow>          = vec![];
         let mut address_transactions:    Vec<AddressTransactionRow>   = vec![];
 
@@ -66,9 +66,8 @@ pub fn build_index_batches(
             let header     = &entry.chain_block_header;
             let block_hash = header.hash.expect("chain_block_header.hash");
 
-            // Selected parent on the virtual chain = the previous chain block
-            // in VCP's added_chain_block_hashes order (or the LCA / prior
-            // checkpoint for the first entry).
+            // selected_parent on the virtual chain = previous chain block
+            // in VCP's added_chain_block_hashes order.
             let selected_parent = prev_hash.map(hash_to_bytes);
             prev_hash = Some(block_hash);
 
@@ -77,16 +76,10 @@ pub fn build_index_batches(
                 .and_then(|pbl| pbl.get(0))
                 .map(|level0| level0.iter().map(|h| hash_to_bytes(*h)).collect::<Vec<_>>());
 
-            // ── Block ────────────────────────────────────────────────────────
-            // tx_count left None on the VCP side — the DAG writer populates it
-            // from the block header's transaction_ids (body count, not the
-            // mergeset-wide accepted set VCP sees here).
-            blocks.push(BlockRow {
+            chain_blocks.push(ChainBlockRow {
                 hash:                    hash_to_bytes(block_hash),
-                is_chain_block:          true,
                 selected_parent,
                 parents,
-                tx_count:                None,
                 accepted_id_merkle_root: header.accepted_id_merkle_root.map(hash_to_bytes),
                 bits:                    header.bits.map(|v| v as i64),
                 blue_score:              header.blue_score.map(|v| v as i64),
@@ -160,7 +153,7 @@ pub fn build_index_batches(
         }
 
         batches.push(IndexBatch {
-            blocks,
+            chain_blocks,
             transactions,
             address_transactions,
         });
@@ -169,10 +162,10 @@ pub fn build_index_batches(
     batches
 }
 
-/// Turn `get_blocks` response entries into BlockRows for the unified
-/// `blocks` table. `RpcBlock` (from `get_blocks`) uses direct (non-Option)
-/// header fields, unlike VCP's `RpcOptionalHeader`.
-pub fn build_dag_block_rows(blocks: &[RpcBlock]) -> Vec<BlockRow> {
+/// Turn `get_blocks` response entries into DagBlockRow. `RpcBlock` (from
+/// `get_blocks`) uses direct (non-Option) header fields, unlike VCP's
+/// `RpcOptionalHeader`.
+pub fn build_dag_block_rows(blocks: &[RpcBlock]) -> Vec<DagBlockRow> {
     blocks.iter().map(|b| {
         let header = &b.header;
         let vd     = b.verbose_data.as_ref();
@@ -182,13 +175,10 @@ pub fn build_dag_block_rows(blocks: &[RpcBlock]) -> Vec<BlockRow> {
             .map(|level0| level0.iter().map(|h| hash_to_bytes(*h)).collect());
 
         let selected_parent = vd.map(|v| hash_to_bytes(v.selected_parent_hash));
-
-        let is_chain_block = vd.map(|v| v.is_chain_block).unwrap_or(false);
         let tx_count = vd.map(|v| v.transaction_ids.len() as i16);
 
-        BlockRow {
+        DagBlockRow {
             hash:                    hash_to_bytes(header.hash),
-            is_chain_block,
             selected_parent,
             parents,
             tx_count,

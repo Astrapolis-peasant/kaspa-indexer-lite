@@ -26,7 +26,8 @@ serde_nested_with = { git = "https://github.com/murar8/serde_nested_with.git", t
 lto = "thin"
 strip = true
 overflow-checks = true
-panic = "abort"
+# Keep default "unwind" — the outer reconnect loop relies on panicked
+# spawn'd tasks surfacing as JoinErrors rather than aborting the process.
 
 [profile.dev]
-panic = "abort"
+

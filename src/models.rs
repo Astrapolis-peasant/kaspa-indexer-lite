@@ -22,12 +22,32 @@ pub struct TransactionOutput {
 
 // DB row structs
 
-pub struct BlockRow {
+/// DAG block row — written exclusively by the DAG consumer.
+pub struct DagBlockRow {
     pub hash:                    Vec<u8>,
-    pub is_chain_block:          bool,
     pub selected_parent:         Option<Vec<u8>>,
     pub parents:                 Option<Vec<Vec<u8>>>,
     pub tx_count:                Option<i16>,
+    pub accepted_id_merkle_root: Option<Vec<u8>>,
+    pub bits:                    Option<i64>,
+    pub blue_score:              Option<i64>,
+    pub blue_work:               Option<Vec<u8>>,
+    pub daa_score:               Option<i64>,
+    pub hash_merkle_root:        Option<Vec<u8>>,
+    pub nonce:                   Option<Vec<u8>>,
+    pub pruning_point:           Option<Vec<u8>>,
+    pub timestamp:               Option<i64>,
+    pub utxo_commitment:         Option<Vec<u8>>,
+    pub version:                 Option<i16>,
+}
+
+/// Chain block row — written exclusively by the VCP consumer.
+/// Carries full header fields (mirrors DagBlockRow minus the DAG-only
+/// `tx_count` field, which is body size and best sourced from dag_blocks).
+pub struct ChainBlockRow {
+    pub hash:                    Vec<u8>,
+    pub selected_parent:         Option<Vec<u8>>,
+    pub parents:                 Option<Vec<Vec<u8>>>,
     pub accepted_id_merkle_root: Option<Vec<u8>>,
     pub bits:                    Option<i64>,
     pub blue_score:              Option<i64>,
@@ -62,7 +82,7 @@ pub struct AddressTransactionRow {
 }
 
 pub struct IndexBatch {
-    pub blocks:                  Vec<BlockRow>,
+    pub chain_blocks:            Vec<ChainBlockRow>,
     pub transactions:            Vec<TransactionRow>,
     pub address_transactions:    Vec<AddressTransactionRow>,
 }

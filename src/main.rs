@@ -181,7 +181,7 @@ async fn main() {
                     last_committed = Some(tip);
                     info!(
                         "+{:4} blocks | {:6} tx | {:6} addr | {:.2}s | {}",
-                        index_batch.blocks.len(),
+                        index_batch.chain_blocks.len(),
                         tx_count,
                         addr_count,
                         t0.elapsed().as_secs_f64(),
