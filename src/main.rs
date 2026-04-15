@@ -199,8 +199,7 @@ async fn main() {
                 match dag_client.get_blocks(Some(low), true, false).await {
                     Ok(resp) => {
                         // get_blocks echoes low_hash as the first entry. If the
-                        // last entry equals our current low_hash, no forward
-                        // progress → we're at tip; sleep instead of spinning.
+                        // last entry is still our low, no forward progress → at tip.
                         let last = resp.block_hashes.last().copied();
                         let advanced = last.is_some() && last != Some(low);
                         if !advanced {
@@ -212,6 +211,14 @@ async fn main() {
                         debug!("dag fetched {:4} blocks in {:.2}s | {}",
                                resp.blocks.len(), t0.elapsed().as_secs_f64(), low);
                         if dag_sender.send(resp.blocks).await.is_err() { break; }
+                        // Pace each iteration at poll_interval. During catchup
+                        // each call already takes longer than poll_interval
+                        // (~0.3s+ for 250 blocks), so this is a no-op. At tip
+                        // fetch is <0.1s → sleep the remainder so we poll ~1/s.
+                        let elapsed = t0.elapsed();
+                        if elapsed < poll_interval {
+                            tokio::time::sleep(poll_interval - elapsed).await;
+                        }
                     }
                     Err(e) => {
                         warn!("get_blocks error: {} — retrying in 5s", e);
