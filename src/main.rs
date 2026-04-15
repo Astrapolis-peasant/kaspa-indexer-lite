@@ -210,14 +210,15 @@ async fn main() {
                         low = last.unwrap();
                         debug!("dag fetched {:4} blocks in {:.2}s | {}",
                                resp.blocks.len(), t0.elapsed().as_secs_f64(), low);
+                        let n = resp.blocks.len();
                         if dag_sender.send(resp.blocks).await.is_err() { break; }
-                        // Pace each iteration at poll_interval. During catchup
-                        // each call already takes longer than poll_interval
-                        // (~0.3s+ for 250 blocks), so this is a no-op. At tip
-                        // fetch is <0.1s → sleep the remainder so we poll ~1/s.
-                        let elapsed = t0.elapsed();
-                        if elapsed < poll_interval {
-                            tokio::time::sleep(poll_interval - elapsed).await;
+                        // Only pace near the tip. Catchup batches (kaspad
+                        // returns up to 249) sprint back-to-back.
+                        if n < 100 {
+                            let elapsed = t0.elapsed();
+                            if elapsed < poll_interval {
+                                tokio::time::sleep(poll_interval - elapsed).await;
+                            }
                         }
                     }
                     Err(e) => {
