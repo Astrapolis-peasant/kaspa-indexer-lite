@@ -206,8 +206,8 @@ async fn main() {
                         if let Some(last) = resp.block_hashes.last() {
                             low = *last;
                         }
-                        info!("dag fetched {:4} blocks in {:.2}s | {}",
-                              resp.blocks.len(), t0.elapsed().as_secs_f64(), low);
+                        debug!("dag fetched {:4} blocks in {:.2}s | {}",
+                               resp.blocks.len(), t0.elapsed().as_secs_f64(), low);
                         if dag_sender.send(resp.blocks).await.is_err() { break; }
                     }
                     Err(e) => {
