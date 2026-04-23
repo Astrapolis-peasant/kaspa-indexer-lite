@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS chain_blocks (
     hash                    BYTEA PRIMARY KEY,
     selected_parent         BYTEA,
     parents                 BYTEA[],
+    tx_count                SMALLINT,
     accepted_id_merkle_root BYTEA,
     bits                    BIGINT,
     blue_score              BIGINT,
@@ -66,6 +67,7 @@ CREATE TABLE IF NOT EXISTS chain_blocks (
 );
 CREATE INDEX IF NOT EXISTS idx_chain_blocks_blue_score      ON chain_blocks (blue_score);
 CREATE INDEX IF NOT EXISTS idx_chain_blocks_selected_parent ON chain_blocks (selected_parent);
+CREATE INDEX IF NOT EXISTS idx_chain_blocks_timestamp       ON chain_blocks (timestamp);
 
 -- Transactions with inputs/outputs as composite type arrays.
 -- block_hash: DAG block that included the tx (verbose_data.block_hash)
@@ -80,11 +82,14 @@ CREATE TABLE IF NOT EXISTS transactions (
     version        SMALLINT,
     block_hash     BYTEA,
     accepted_by    BYTEA,
+    is_spam        BOOLEAN NOT NULL DEFAULT FALSE,
     inputs         transactions_inputs[],
     outputs        transactions_outputs[]
 );
 CREATE INDEX IF NOT EXISTS idx_transactions_accepted_by ON transactions (accepted_by);
 CREATE INDEX IF NOT EXISTS idx_transactions_block_hash  ON transactions (block_hash) WHERE block_hash IS NOT NULL;
+-- Newest-first pagination on /txs and live feed: ORDER BY block_time DESC LIMIT N.
+CREATE INDEX IF NOT EXISTS idx_transactions_block_time  ON transactions (block_time DESC);
 ALTER TABLE transactions ALTER COLUMN payload SET COMPRESSION lz4;
 
 -- Address to transaction lookup (deduped in Rust, no PK)
@@ -93,5 +98,8 @@ CREATE TABLE IF NOT EXISTS addresses_transactions (
     transaction_id BYTEA NOT NULL,
     block_time     BIGINT
 );
-CREATE INDEX IF NOT EXISTS idx_addresses_transactions_address
-    ON addresses_transactions (address);
+-- Composite enables newest-first pagination on /address/:addr with no Sort step.
+CREATE INDEX IF NOT EXISTS idx_addresses_transactions_address_time
+    ON addresses_transactions (address, block_time DESC);
+CREATE INDEX IF NOT EXISTS idx_addresses_transactions_block_time_btree
+    ON addresses_transactions (block_time);

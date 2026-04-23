@@ -2,6 +2,7 @@ mod db;
 mod kaspad;
 mod models;
 mod processor;
+mod pruner;
 
 use std::time::{Duration, Instant};
 
@@ -46,6 +47,10 @@ struct Args {
     /// Number of DB connections in pool
     #[arg(long, default_value_t = 4)]
     db_pool_size: u32,
+
+    /// Enable pruning of expired dag blocks and spam transactions
+    #[arg(long, default_value_t = true)]
+    prune: bool,
 }
 
 #[tokio::main]
@@ -66,6 +71,10 @@ async fn main() {
     );
 
     let poll_interval = Duration::from_millis(args.poll_interval_ms);
+
+    if args.prune {
+        tokio::spawn(pruner::run(pool.clone()));
+    }
 
     loop {
         let vcp_client = kaspad::connect(&args.kaspad_ws).await;

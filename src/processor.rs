@@ -43,6 +43,22 @@ pub fn hash_to_bytes(h: Hash) -> Vec<u8> {
     h.as_bytes().to_vec()
 }
 
+fn is_likely_spam(
+    subnetwork_id: &Option<Vec<u8>>,
+    mass: Option<i32>,
+    inputs: &Option<Vec<TransactionInput>>,
+    outputs: &Option<Vec<TransactionOutput>>,
+) -> bool {
+    let is_coinbase = subnetwork_id.as_deref() == Some(&[0x01]);
+    if is_coinbase { return false; }
+    let ins = match inputs { Some(v) if v.len() == 1 => v, _ => return false };
+    let outs = match outputs { Some(v) if v.len() == 1 => v, _ => return false };
+    if mass != Some(1624) { return false; }
+    let in_amount = ins[0].previous_outpoint_amount.unwrap_or(0);
+    let out_amount = outs[0].amount.unwrap_or(0);
+    out_amount < 100_000_000 && in_amount - out_amount == 2036
+}
+
 fn compress_subnetwork(bytes: &[u8; 20]) -> Option<Vec<u8>> {
     let len = bytes.iter().rposition(|&b| b != 0).map(|i| i + 1).unwrap_or(0);
     if len == 0 { None } else { Some(bytes[..len].to_vec()) }
@@ -80,6 +96,7 @@ pub fn build_index_batches(
                 hash:                    hash_to_bytes(block_hash),
                 selected_parent,
                 parents,
+                tx_count:                entry.accepted_transactions.len() as i16,
                 accepted_id_merkle_root: header.accepted_id_merkle_root.map(hash_to_bytes),
                 bits:                    header.bits.map(|v| v as i64),
                 blue_score:              header.blue_score.map(|v| v as i64),
@@ -101,18 +118,24 @@ pub fn build_index_batches(
                 let included_in    = verbose_data.block_hash.expect("missing block_hash");
 
                 if seen_transactions.insert(transaction_id) {
+                    let subnetwork_id = rpc_tx.subnetwork_id.as_ref().and_then(|s| compress_subnetwork(s.as_ref()));
+                    let mass = verbose_data.compute_mass.and_then(|m| (m != 0).then_some(m as i32));
+                    let inputs = map_inputs(rpc_tx);
+                    let outputs = map_outputs(rpc_tx);
+                    let is_spam = is_likely_spam(&subnetwork_id, mass, &inputs, &outputs);
                     transactions.push(TransactionRow {
                         transaction_id: hash_to_bytes(transaction_id),
-                        subnetwork_id:  rpc_tx.subnetwork_id.as_ref().and_then(|s| compress_subnetwork(s.as_ref())),
+                        subnetwork_id,
                         hash:           verbose_data.hash.map(hash_to_bytes),
-                        mass:           verbose_data.compute_mass.and_then(|m| (m != 0).then_some(m as i32)),
+                        mass,
                         payload:        rpc_tx.payload.as_ref().filter(|p| !p.is_empty()).map(|p| p.to_vec()),
                         block_time:     Some(block_time),
                         version:        rpc_tx.version.and_then(|v| (v != 0).then_some(v as i16)),
                         block_hash:     Some(hash_to_bytes(included_in)),
                         accepted_by:    hash_to_bytes(block_hash),
-                        inputs:         map_inputs(rpc_tx),
-                        outputs:        map_outputs(rpc_tx),
+                        is_spam,
+                        inputs,
+                        outputs,
                     });
 
                     for output in &rpc_tx.outputs {

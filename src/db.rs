@@ -74,15 +74,15 @@ fn placeholders(rows: usize, cols: usize) -> String {
 pub async fn commit_index_batch(pool: &PgPool, batch: &IndexBatch) -> (usize, usize) {
     let mut db_txn = pool.begin().await.expect("begin transaction");
 
-    // 1. chain_blocks (14 cols → max ~4200 rows per chunk)
-    for chunk in batch.chain_blocks.chunks(MAX_PARAMS / 14) {
+    // 1. chain_blocks (15 cols → max ~4000 rows per chunk)
+    for chunk in batch.chain_blocks.chunks(MAX_PARAMS / 15) {
         let sql = format!(
             "INSERT INTO chain_blocks
-             (hash, selected_parent, parents, accepted_id_merkle_root, bits,
+             (hash, selected_parent, parents, tx_count, accepted_id_merkle_root, bits,
               blue_score, blue_work, daa_score, hash_merkle_root, nonce,
               pruning_point, timestamp, utxo_commitment, version)
              VALUES {} ON CONFLICT (hash) DO NOTHING",
-            placeholders(chunk.len(), 14)
+            placeholders(chunk.len(), 15)
         );
         let mut query = sqlx::query(&sql);
         for c in chunk {
@@ -90,6 +90,7 @@ pub async fn commit_index_batch(pool: &PgPool, batch: &IndexBatch) -> (usize, us
                 .bind(&c.hash)
                 .bind(&c.selected_parent)
                 .bind(&c.parents)
+                .bind(c.tx_count)
                 .bind(&c.accepted_id_merkle_root)
                 .bind(c.bits)
                 .bind(c.blue_score)
@@ -105,17 +106,18 @@ pub async fn commit_index_batch(pool: &PgPool, batch: &IndexBatch) -> (usize, us
         query.execute(db_txn.as_mut()).await.expect("insert chain_blocks");
     }
 
-    // 2. transactions (11 cols, 250 rows per chunk)
+    // 2. transactions (12 cols, 250 rows per chunk)
     for chunk in batch.transactions.chunks(250) {
         let sql = format!(
             "INSERT INTO transactions
              (transaction_id, subnetwork_id, hash, mass, payload, block_time, version,
-              block_hash, accepted_by, inputs, outputs)
+              block_hash, accepted_by, is_spam, inputs, outputs)
              VALUES {} ON CONFLICT (transaction_id) DO UPDATE SET
                  accepted_by = EXCLUDED.accepted_by,
                  block_hash  = EXCLUDED.block_hash,
-                 block_time  = EXCLUDED.block_time",
-            placeholders(chunk.len(), 11)
+                 block_time  = EXCLUDED.block_time,
+                 is_spam     = EXCLUDED.is_spam",
+            placeholders(chunk.len(), 12)
         );
         let mut query = sqlx::query(&sql);
         for t in chunk {
@@ -129,6 +131,7 @@ pub async fn commit_index_batch(pool: &PgPool, batch: &IndexBatch) -> (usize, us
                 .bind(t.version)
                 .bind(&t.block_hash)
                 .bind(&t.accepted_by)
+                .bind(t.is_spam)
                 .bind(&t.inputs)
                 .bind(&t.outputs);
         }

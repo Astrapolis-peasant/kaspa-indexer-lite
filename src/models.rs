@@ -48,6 +48,7 @@ pub struct ChainBlockRow {
     pub hash:                    Vec<u8>,
     pub selected_parent:         Option<Vec<u8>>,
     pub parents:                 Option<Vec<Vec<u8>>>,
+    pub tx_count:                i16,
     pub accepted_id_merkle_root: Option<Vec<u8>>,
     pub bits:                    Option<i64>,
     pub blue_score:              Option<i64>,
@@ -71,6 +72,7 @@ pub struct TransactionRow {
     pub version:        Option<i16>,
     pub block_hash:     Option<Vec<u8>>,
     pub accepted_by:    Vec<u8>,
+    pub is_spam:        bool,
     pub inputs:         Option<Vec<TransactionInput>>,
     pub outputs:        Option<Vec<TransactionOutput>>,
 }

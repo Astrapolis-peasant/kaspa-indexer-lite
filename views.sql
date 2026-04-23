@@ -66,6 +66,7 @@ SELECT
   version,
   subnetwork_id,
   payload,
+  is_spam,
   COALESCE(array_length(inputs, 1), 0)  AS input_count,
   COALESCE(array_length(outputs, 1), 0) AS output_count,
   inputs,
